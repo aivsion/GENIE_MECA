@@ -36,6 +36,10 @@ import {
   ClipboardCheck
 } from "lucide-react";
 
+import { auth, db } from "./firebase";
+import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from "firebase/auth";
+import { collection, query, where, getDocs, addDoc, doc, updateDoc, deleteDoc } from "firebase/firestore";
+
 // Types for Chat Messages
 interface Message {
   role: "user" | "model";
@@ -314,6 +318,90 @@ function GenieMecaLogo({ className = "w-10 h-10" }: { className?: string }) {
 }
 
 export default function App() {
+  // === FIREBASE AUTH & GARAGE STATES ===
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [garageVehicles, setGarageVehicles] = useState<any[]>([]);
+  const [garageLoading, setGarageLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+      if (currentUser) {
+        setGarageLoading(true);
+        try {
+          const q = query(collection(db, "vehicles"), where("user_id", "==", currentUser.uid));
+          const snapshot = await getDocs(q);
+          const v = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setGarageVehicles(v);
+        } catch (e) {
+          console.error("Error fetching vehicles:", e);
+        } finally {
+          setGarageLoading(false);
+        }
+      } else {
+        setGarageVehicles([]);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  const handleGoogleLogin = async () => {
+    try {
+      setAuthError("");
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (e: any) {
+      setAuthError(e.message || "Erreur de connexion");
+    }
+  };
+
+  const handleLogout = () => {
+    signOut(auth);
+  };
+
+  const saveVehicleToGarage = async () => {
+    if (!user) {
+      setToastMessage("Connectez-vous pour sauvegarder !");
+      setToastType("info");
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    
+    // Check if we have identified a vehicle or using manual
+    const vehicleDataToSave = identifiedVehicle ? {
+      immatriculation: sivVinQuery || "INCONNUE",
+      brand: identifiedVehicle.brand,
+      model: identifiedVehicle.model,
+      year: identifiedVehicle.year,
+      engine: identifiedVehicle.engine,
+      category: identifiedVehicle.category,
+      user_id: user.uid
+    } : {
+      immatriculation: "Manuel",
+      brand: brand === "Autre (Saisie libre)" ? customBrand : brand,
+      model: model === "Autre (Saisie libre)" ? customModel : model,
+      year: year,
+      engine: engine,
+      category: category,
+      user_id: user.uid
+    };
+
+    try {
+      const docRef = await addDoc(collection(db, "vehicles"), vehicleDataToSave);
+      setGarageVehicles([...garageVehicles, { id: docRef.id, ...vehicleDataToSave }]);
+      setToastMessage("Véhicule sauvegardé au garage !");
+      setToastType("success");
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (e: any) {
+      setToastMessage("Erreur lors de la sauvegarde.");
+      setToastType("error");
+      setTimeout(() => setToastMessage(null), 3000);
+    }
+  };
+
   // Navigation active state: "home" or "agent-console"
   const [activeTab, setActiveTab] = useState<"home" | "agent-console">("home");
   
@@ -1187,24 +1275,40 @@ export default function App() {
 
           {/* Action buttons on the right */}
           <div className="flex items-center space-x-4">
-            <button 
-              onClick={() => {
-                setSimulatedPlan("Premium Intégral");
-                setActiveTab("agent-console");
-              }}
-              className="text-sm font-semibold hover:text-primary-gold text-rich-black transition hidden sm:inline-block cursor-pointer font-sans"
-            >
-              Se connecter
-            </button>
-            <button 
-              onClick={() => {
-                setSimulatedPlan("Découverte (0 €)");
-                setActiveTab("agent-console");
-              }}
-              className="bg-rich-black text-neutral-light hover:bg-rich-black/90 px-5 py-2.5 rounded-xl font-semibold text-sm transition border border-primary-gold/30 cursor-pointer font-sans"
-            >
-              Essai Gratuit
-            </button>
+            {authLoading ? (
+               <div className="animate-spin w-5 h-5 border-2 border-primary-gold border-t-transparent rounded-full"></div>
+            ) : user ? (
+               <>
+                 <span className="text-xs font-semibold text-slate-500 hidden md:inline-block">{user.email}</span>
+                 <button 
+                   onClick={handleLogout}
+                   className="text-sm font-semibold hover:text-red-500 text-rich-black transition cursor-pointer font-sans"
+                 >
+                   Déconnexion
+                 </button>
+                 <button 
+                   onClick={() => setActiveTab("agent-console")}
+                   className="bg-rich-black text-neutral-light hover:bg-rich-black/90 px-5 py-2.5 rounded-xl font-semibold text-sm transition border border-primary-gold/30 cursor-pointer font-sans"
+                 >
+                   Mon Garage
+                 </button>
+               </>
+            ) : (
+              <>
+                <button 
+                  onClick={handleGoogleLogin}
+                  className="text-sm font-semibold hover:text-primary-gold text-rich-black transition hidden sm:inline-block cursor-pointer font-sans"
+                >
+                  Se connecter
+                </button>
+                <button 
+                  onClick={() => setActiveTab("agent-console")}
+                  className="bg-rich-black text-neutral-light hover:bg-rich-black/90 px-5 py-2.5 rounded-xl font-semibold text-sm transition border border-primary-gold/30 cursor-pointer font-sans"
+                >
+                  Essai Gratuit
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -1688,6 +1792,30 @@ export default function App() {
         ) : (
           
           /* DIAGNOSTIC CONSOLE COMPONENT SCREEN */
+          !user ? (
+            <div className="bg-slate-50 min-h-[calc(100vh-5rem)] pb-12 flex items-center justify-center p-4">
+              <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border border-slate-100 text-center space-y-6">
+                <div className="mx-auto w-16 h-16 bg-slate-900 rounded-xl flex items-center justify-center mb-4">
+                  <Car className="text-[#D4AF37] w-8 h-8" />
+                </div>
+                <h1 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Génie Méca</h1>
+                <p className="text-slate-500 font-sans text-sm">Connectez-vous pour accéder à votre garage et lancer un diagnostic par intelligence artificielle.</p>
+                <button
+                  onClick={handleGoogleLogin}
+                  className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-3 transition-colors"
+                >
+                  Continuer avec Google
+                </button>
+                {authError && <p className="text-red-500 text-xs font-semibold">{authError}</p>}
+                <button
+                  onClick={() => setActiveTab("home")}
+                  className="mt-4 text-slate-400 hover:text-slate-600 font-semibold text-xs border-b border-transparent hover:border-slate-400 transition"
+                >
+                  ← Retour à la présentation
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="bg-slate-50 min-h-[calc(100vh-5rem)] pb-12" id="console-screen">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
               
@@ -1714,7 +1842,37 @@ export default function App() {
                 
                 {/* 1. LEFT COLUMN: DIRECT INTERACTIVE BUILDER FORM (with auto symptom sets) */}
                 <div className="lg:col-span-5 bg-white border border-slate-150 rounded-2xl p-5 shadow-xs space-y-6" id="interactive-builder-box">
-                  <div className="border-b border-slate-100 pb-3">
+                  
+                  {/* MON GARAGE FIREBASE */}
+                  <div className="bg-slate-50 border border-slate-200/85 rounded-xl p-4 space-y-3 font-sans shadow-sm">
+                    <h3 className="text-xs font-extrabold text-[#0F172A] uppercase tracking-wide flex items-center justify-between border-b border-slate-200 pb-2">
+                       <span className="flex items-center gap-1.5"><Car className="w-4 h-4 text-[#D4AF37]" /> Mon Garage Firebase</span>
+                    </h3>
+                    {garageLoading ? (
+                       <p className="text-xs text-slate-500 animate-pulse text-center">Chargement de votre garage...</p>
+                    ) : garageVehicles.length > 0 ? (
+                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
+                         {garageVehicles.map(v => (
+                           <div key={v.id} onClick={() => {
+                             setIdentifiedVehicle(v);
+                             setSivVinQuery(v.immatriculation);
+                             setCategory(v.category);
+                             setBrand(v.brand);
+                             setModel(v.model);
+                             setYear(v.year);
+                             setEngine(v.engine);
+                           }} className={`cursor-pointer p-2 border rounded-lg transition ${identifiedVehicle?.immatriculation === v.immatriculation ? 'bg-blue-50 border-blue-400 shadow-sm' : 'bg-white border-slate-200 hover:border-slate-300 shadow-xs'}`}>
+                             <div className="font-bold text-[11px] text-slate-900 border-b border-slate-100 pb-1 mb-1 truncate">{v.immatriculation || "Sans Plaque"}</div>
+                             <div className="text-[10px] text-slate-500 truncate leading-tight"><strong className="text-slate-700">{v.brand}</strong><br/>{v.model}</div>
+                           </div>
+                         ))}
+                       </div>
+                    ) : (
+                       <p className="text-xs text-slate-500 text-center py-2">Aucun véhicule enregistré pour le moment.</p>
+                    )}
+                  </div>
+
+                  <div className="border-b border-slate-100 pb-3 mt-4">
                     <h2 className="text-base font-extrabold text-[#0F172A] font-display flex items-center gap-2">
                       <Sliders className="w-5 h-5 text-[#0052FF]" />
                       Votre Guide Simplifié
@@ -2118,7 +2276,7 @@ export default function App() {
                     <button
                       type="submit"
                       disabled={isBotTyping}
-                      className="w-full py-3.5 bg-[#0052FF] hover:bg-[#003CFF] disabled:bg-slate-350 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed font-sans"
+                      className="w-full py-3.5 bg-[#0052FF] hover:bg-[#003CFF] disabled:bg-slate-350 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed font-sans mt-4"
                     >
                       {isBotTyping ? (
                         <>
@@ -2132,6 +2290,16 @@ export default function App() {
                         </>
                       )}
                     </button>
+                    {user && (
+                      <button
+                        type="button"
+                        onClick={saveVehicleToGarage}
+                        className="w-full mt-2 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[10px] uppercase tracking-wider rounded-xl transition-all border border-slate-200 cursor-pointer flex justify-center items-center gap-2"
+                      >
+                        <Car className="w-3.5 h-3.5" />
+                        Sauvegarder ce véhicule dans mon garage
+                      </button>
+                    )}
                   </form>
 
                   {/* SAVED DIAGNOSTIC REPORTS */}
@@ -2299,7 +2467,7 @@ export default function App() {
               </div>
             </div>
           </div>
-        )}
+        ))}
       </main>
 
       {/* FOOTER: Matches exactly layout from the requested template */}
