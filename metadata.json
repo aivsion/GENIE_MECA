@@ -1,0 +1,6 @@
+{
+  "name": "Génie Méca",
+  "description": "L'IA qui répare vos véhicules - expert en diagnostic et maintenance prédictive multi-agents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
